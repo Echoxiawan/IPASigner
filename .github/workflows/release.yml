@@ -1,0 +1,76 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（不带 v，例如 1.2.0）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 编译并发布 Release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取版本号
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "打包版本: $VERSION"
+
+      - name: 编译通用二进制
+        env:
+          UNIVERSAL: "1"
+        run: VERSION="${{ steps.ver.outputs.version }}" ./build.sh
+
+      - name: 冒烟测试
+        run: |
+          BIN=build/IPASigner.app/Contents/MacOS/IPASigner
+          lipo -info "$BIN"
+          codesign --verify --deep --strict build/IPASigner.app
+          "$BIN" --list | head -20
+
+      - name: 生成校验和
+        run: |
+          cd dist
+          shasum -a 256 *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          name: IPASigner ${{ steps.ver.outputs.version }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.ver.outputs.version) }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            macOS 原生 IPA 签名装机工具，通用二进制（Apple Silicon + Intel），支持 macOS 13+。
+
+            **安装**
+            1. 下载 `IPASigner-${{ steps.ver.outputs.version }}-macOS.zip` 并解压
+            2. 拖进「应用程序」，首次打开若提示「无法验证开发者」，右键 → 打开（或执行）
+               ```bash
+               xattr -dr com.apple.quarantine /Applications/IPASigner.app
+               ```
+
+            **前置条件**
+            - Xcode 里登录过 Apple ID，且目标设备连过一次 Xcode（生成含该设备 UDID 的描述文件）
+            - `brew install libimobiledevice`
+            - 设备已开启「设置 → 隐私与安全性 → 开发者模式」
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt

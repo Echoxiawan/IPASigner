@@ -1,0 +1,40 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: 编译通用二进制
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境
+        run: |
+          sw_vers
+          xcodebuild -version
+          swiftc --version
+
+      - name: 编译（arm64 + x86_64）
+        env:
+          UNIVERSAL: "1"
+          VERSION: "0.0.0-ci"
+        run: ./build.sh
+
+      - name: 冒烟测试
+        run: |
+          BIN=build/IPASigner.app/Contents/MacOS/IPASigner
+          lipo -info "$BIN"
+          codesign --verify --deep --strict build/IPASigner.app
+          "$BIN" --list | head -20
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPASigner-macOS-universal
+          path: dist/*.zip
+          if-no-files-found: error

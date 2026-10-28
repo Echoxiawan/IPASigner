@@ -1,0 +1,10 @@
+build/
+dist/
+*.ipa
+.DS_Store
+
+# IDE config
+.idea/
+
+# local release helper, not part of the repo
+/scripts/release.sh
