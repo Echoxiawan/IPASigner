@@ -26,6 +26,10 @@
 
 直接使用钥匙串里现成的开发者证书：**不在工具里登录 Apple ID，也不联网**，全程本地离线签名。它不申请证书、不注册 AppID、不登记设备——那些照旧交给 Xcode 自动签名或 [developer.apple.com](https://developer.apple.com)；本工具只负责「证书和描述文件已就绪时，怎么最快把包装到手机上」。
 
+<div align="center">
+<img src="docs/screenshot.png" width="820" alt="IPASigner 主界面截图">
+</div>
+
 ---
 
 <a id="contents"></a>
@@ -105,9 +109,8 @@ pip3 install pymobiledevice3
 
 ### 用预编译版本
 
-1. 在 [Releases](https://github.com/Echoxiawan/IPASigner/releases) 下载 `IPASigner-<版本>-macOS.zip` 并解压；
-2. 把 `IPASigner.app` 拖进「应用程序」；
-3. 首次打开若被 Gatekeeper 拦截，右键 → 打开，或执行：
+1. 在 [Releases](https://github.com/Echoxiawan/IPASigner/releases) 下载 `IPASigner-<版本>-macOS.dmg`，打开后把 `IPASigner.app` 拖进「应用程序」（也可以下载 zip 解压后手动拖入）；
+2. 首次打开若被 Gatekeeper 拦截，右键 → 打开，或执行：
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/IPASigner.app
@@ -121,22 +124,24 @@ xattr -dr com.apple.quarantine /Applications/IPASigner.app
 ./build.sh                    # 本机架构，默认版本 1.0.0
 open build/IPASigner.app
 
-VERSION=1.2.0 ./build.sh      # 版本号写进 Info.plist 和 zip 文件名
+VERSION=1.2.0 ./build.sh      # 版本号写进 Info.plist 和 zip/dmg 文件名
 UNIVERSAL=1 ./build.sh        # arm64 + x86_64 通用二进制（lipo 合并）
 ```
 
-构建脚本只做四件事：
+构建脚本只做五件事：
 
 1. `swiftc -O` 把 `Sources/*.swift` 编成可执行文件；
 2. 套上 `Resources/Info.plist` 与图标；
 3. `codesign -` 本地 ad-hoc 签名并自检；
-4. 用 `ditto` 打出 `dist/IPASigner-<版本>-macOS.zip`。
+4. 用 `ditto` 打出 `dist/IPASigner-<版本>-macOS.zip`；
+5. 用 `hdiutil` 打出 `dist/IPASigner-<版本>-macOS.dmg`（内含「应用程序」快捷方式，拖拽安装）。
 
 产物：
 
 ```text
 build/IPASigner.app               可直接双击运行
 dist/IPASigner-<版本>-macOS.zip   可分发包
+dist/IPASigner-<版本>-macOS.dmg   拖拽式安装盘
 ```
 
 默认只编本机架构；`UNIVERSAL=1` 才同时包含 `arm64` 和 `x86_64`。
@@ -314,7 +319,7 @@ IPASigner/
 │   ├── CLIMode.swift      命令行入口
 │   └── Support.swift      进程执行 / 哈希 / Mach-O 判定 / 杂项
 ├── Resources/             Info.plist 与图标资源
-├── docs/                  logo.png
+├── docs/                  logo.png、screenshot.png
 ├── build.sh               一键构建 .app
 └── LICENSE
 ```

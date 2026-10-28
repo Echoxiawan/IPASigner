@@ -28,6 +28,10 @@ It reuses the development identities already in your Keychain: **no Apple ID log
 
 > The app UI is currently in Simplified Chinese. This document uses the Chinese button labels with English explanations.
 
+<div align="center">
+<img src="docs/screenshot.png" width="820" alt="IPASigner main window">
+</div>
+
 ---
 
 <a id="contents"></a>
@@ -107,9 +111,8 @@ Missing any one of these is the usual reason for "no usable account":
 
 ### Use a prebuilt release
 
-1. Download `IPASigner-<version>-macOS.zip` from [Releases](https://github.com/Echoxiawan/IPASigner/releases) and unzip it;
-2. Drag `IPASigner.app` into /Applications;
-3. If Gatekeeper blocks the first launch, right-click → Open, or run:
+1. Download `IPASigner-<version>-macOS.dmg` from [Releases](https://github.com/Echoxiawan/IPASigner/releases), open it and drag `IPASigner.app` into /Applications (or download the zip and drag it in manually);
+2. If Gatekeeper blocks the first launch, right-click → Open, or run:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/IPASigner.app
@@ -123,22 +126,24 @@ Release builds are **ad-hoc signed and not notarized**, so that one-time confirm
 ./build.sh                    # host architecture, default version 1.0.0
 open build/IPASigner.app
 
-VERSION=1.2.0 ./build.sh      # version goes into Info.plist and the zip name
+VERSION=1.2.0 ./build.sh      # version goes into Info.plist and the zip/dmg names
 UNIVERSAL=1 ./build.sh        # arm64 + x86_64 universal binary (via lipo)
 ```
 
-The build script does exactly four things:
+The build script does exactly five things:
 
 1. `swiftc -O` compiles `Sources/*.swift` into an executable;
 2. wraps it with `Resources/Info.plist` and the icon;
 3. signs it ad-hoc with `codesign -` and verifies the result;
-4. packages `dist/IPASigner-<version>-macOS.zip` with `ditto`.
+4. packages `dist/IPASigner-<version>-macOS.zip` with `ditto`;
+5. builds `dist/IPASigner-<version>-macOS.dmg` with `hdiutil` (with an Applications shortcut for drag-and-drop install).
 
 Artifacts:
 
 ```text
-build/IPASigner.app               double-click and run
+build/IPASigner.app                  double-click and run
 dist/IPASigner-<version>-macOS.zip   distributable package
+dist/IPASigner-<version>-macOS.dmg   drag-and-drop installer
 ```
 
 Only the host architecture is built by default; `UNIVERSAL=1` produces both `arm64` and `x86_64`.
@@ -316,7 +321,7 @@ IPASigner/
 │   ├── CLIMode.swift      Command line entry point
 │   └── Support.swift      Process execution / hashing / Mach-O detection / misc
 ├── Resources/             Info.plist and icon resources
-├── docs/                  logo.png
+├── docs/                  logo.png, screenshot.png
 ├── build.sh               One-shot build of the .app
 └── LICENSE
 ```
