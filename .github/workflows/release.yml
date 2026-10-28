@@ -22,9 +22,11 @@ jobs:
 
       - name: 取版本号
         id: ver
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+            VERSION="$INPUT_VERSION"
           else
             VERSION="${GITHUB_REF_NAME#v}"
           fi
@@ -34,7 +36,8 @@ jobs:
       - name: 编译通用二进制
         env:
           UNIVERSAL: "1"
-        run: VERSION="${{ steps.ver.outputs.version }}" ./build.sh
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: ./build.sh
 
       - name: 冒烟测试
         run: |
@@ -46,7 +49,7 @@ jobs:
       - name: 生成校验和
         run: |
           cd dist
-          shasum -a 256 *.zip > SHA256SUMS.txt
+          shasum -a 256 *.zip *.dmg > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: 发布
@@ -61,8 +64,8 @@ jobs:
             macOS 原生 IPA 签名装机工具，通用二进制（Apple Silicon + Intel），支持 macOS 13+。
 
             **安装**
-            1. 下载 `IPASigner-${{ steps.ver.outputs.version }}-macOS.zip` 并解压
-            2. 拖进「应用程序」，首次打开若提示「无法验证开发者」，右键 → 打开（或执行）
+            1. 下载 `IPASigner-${{ steps.ver.outputs.version }}-macOS.dmg` 打开，把 IPASigner 拖进「应用程序」（或下载 zip 解压）
+            2. 首次打开若提示「无法验证开发者」，右键 → 打开（或执行）
                ```bash
                xattr -dr com.apple.quarantine /Applications/IPASigner.app
                ```
@@ -72,5 +75,6 @@ jobs:
             - `brew install libimobiledevice`
             - 设备已开启「设置 → 隐私与安全性 → 开发者模式」
           files: |
+            dist/*.dmg
             dist/*.zip
             dist/SHA256SUMS.txt

@@ -8,6 +8,7 @@
 # 产物：
 #   build/IPASigner.app                  可直接 open
 #   dist/IPASigner-<VERSION>-macOS.zip   可分发
+#   dist/IPASigner-<VERSION>-macOS.dmg   拖拽安装
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -17,6 +18,7 @@ BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 DIST_DIR="dist"
 ZIP="$DIST_DIR/${APP_NAME}-${VERSION}-macOS.zip"
+DMG="$DIST_DIR/${APP_NAME}-${VERSION}-macOS.dmg"
 TARGET_MIN="macos13.0"
 BIN="$APP/Contents/MacOS/$APP_NAME"
 
@@ -66,8 +68,17 @@ mkdir -p "$DIST_DIR"
 rm -f "$DIST_DIR/${APP_NAME}-"*"-macOS.zip"
 ditto -c -k --norsrc --keepParent "$APP" "$ZIP"
 
+echo "==> 打 DMG 安装盘"
+STAGE=$(mktemp -d)
+ditto "$APP" "$STAGE/$APP_NAME.app"
+ln -s /Applications "$STAGE/Applications"
+rm -f "$DIST_DIR/${APP_NAME}-"*"-macOS.dmg"
+hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG" -quiet
+rm -rf "$STAGE"
+
 echo
 echo "产物:"
 echo "  $APP   ($(du -sh "$APP" | cut -f1))"
 echo "  $ZIP   ($(du -sh "$ZIP" | cut -f1))"
+echo "  $DMG   ($(du -sh "$DMG" | cut -f1))"
 echo "  架构: $(lipo -archs "$BIN" 2>/dev/null || echo unknown)"
