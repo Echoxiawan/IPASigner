@@ -33,36 +33,45 @@ final class AppModel: ObservableObject {
         Task.detached(priority: .userInitiated) {
             let identities = Discovery.identities()
             let profiles = Discovery.profiles()
-            let fetched: (devices: [DeviceInfo], error: String?) = {
-                do { return (try Discovery.devices(), nil) }
-                catch { return ([], error.localizedDescription) }
-            }()
+            let discovered = Discovery.discoverDevices()
             await MainActor.run {
                 self.identities = identities
                 self.profiles = profiles
-                self.devices = fetched.devices
-                if !fetched.devices.contains(where: { $0.udid == self.selectedDeviceUDID }) {
-                    self.selectedDeviceUDID = fetched.devices.first?.udid ?? ""
+                self.devices = discovered.devices
+                if !discovered.devices.contains(where: { $0.udid == self.selectedDeviceUDID }) {
+                    self.selectedDeviceUDID = discovered.devices.first?.udid ?? ""
                 }
-                if let errorText = fetched.error {
-                    self.hint = errorText
-                }
-                self.status = "证书 \(identities.count) 张 · 描述文件 \(profiles.count) 个 · 设备 \(fetched.devices.count) 台"
                 self.recomputeCandidates()
+                if discovered.devices.isEmpty {
+                    self.hint = discovered.warnings.isEmpty
+                        ? "没检测到设备：确认 iPhone 已解锁、已信任此电脑，并开启开发者模式"
+                        : discovered.warnings.joined(separator: "\n")
+                    self.status = "证书 \(identities.count) 张 · 描述文件 \(profiles.count) 个 · 设备 0 台"
+                } else {
+                    self.status = "证书 \(identities.count) 张 · 描述文件 \(profiles.count) 个 · 设备 \(discovered.devices.count) 台"
+                }
             }
         }
     }
 
     func refreshDevices() {
         Task.detached(priority: .userInitiated) {
-            let devices = (try? Discovery.devices()) ?? []
+            let discovered = Discovery.discoverDevices()
+            let devices = discovered.devices
             await MainActor.run {
                 self.devices = devices
                 if !devices.contains(where: { $0.udid == self.selectedDeviceUDID }) {
                     self.selectedDeviceUDID = devices.first?.udid ?? ""
                 }
-                self.status = devices.isEmpty ? "没检测到设备，检查数据线 / 信任弹窗" : "设备 \(devices.count) 台已连接"
                 self.recomputeCandidates()
+                if devices.isEmpty {
+                    self.hint = discovered.warnings.isEmpty
+                        ? "没检测到设备：确认 iPhone 已解锁、已信任此电脑，并开启开发者模式"
+                        : discovered.warnings.joined(separator: "\n")
+                    self.status = "没检测到设备"
+                } else {
+                    self.status = "设备 \(devices.count) 台已连接"
+                }
             }
         }
     }
@@ -107,6 +116,8 @@ final class AppModel: ObservableObject {
         }
         if !list.isEmpty {
             hint = nil
+        } else if ipa != nil, selectedDeviceUDID.isEmpty {
+            hint = "没有可用账号：先连接并选择一台设备"
         } else if ipa != nil, !identities.isEmpty || !profiles.isEmpty {
             hint = "没有可用账号：需要一张证书，且它的描述文件还没过期、包含这台设备的 UDID、AppID 能覆盖 \(ipa?.bundleID ?? "该包")。到 Xcode → Settings → Accounts 里给该设备生成一次描述文件即可。"
         }
@@ -127,10 +138,10 @@ final class AppModel: ObservableObject {
     // MARK: - 动作
 
     func signAndInstall() {
-        guard let ipa, let candidate = selectedCandidate, !selectedDeviceUDID.isEmpty else { return }
+        guard let ipa, let candidate = selectedCandidate, let device = selectedDevice else { return }
         let base = (ipa.fileName as NSString).deletingPathExtension
         let out = NSTemporaryDirectory() + "\(base)-signed.ipa"
-        run(candidate: candidate, ipa: ipa, output: out, install: true)
+        run(candidate: candidate, ipa: ipa, device: device, output: out, install: true)
     }
 
     func signOnly() {
@@ -140,21 +151,25 @@ final class AppModel: ObservableObject {
         panel.allowedFileTypes = ["ipa"]
         panel.message = "把重签名后的包存到哪"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        run(candidate: candidate, ipa: ipa, output: url.path, install: false)
+        guard let device = selectedDevice else { return }
+        run(candidate: candidate, ipa: ipa, device: device, output: url.path, install: false)
     }
 
-    private func run(candidate: SignCandidate, ipa: IPAInfo, output: String, install: Bool) {
+    private func run(candidate: SignCandidate,
+                     ipa: IPAInfo,
+                     device: DeviceInfo,
+                     output: String,
+                     install: Bool) {
         busy = true
         logText = ""
         hint = nil
-        let udid = selectedDeviceUDID
         let shouldLaunch = launchAfterInstall
         append("===== 开始 =====")
         append("包   : \(ipa.path)")
         append("包 ID: \(ipa.bundleID)")
         append("身份: \(candidate.identity.name)  (\(candidate.identity.sha1))")
         append("文件: \(candidate.profile.name)")
-        append("设备: \(selectedDevice?.display ?? udid)")
+        append("设备: \(device.display)")
 
         Task.detached(priority: .userInitiated) {
             do {
@@ -163,15 +178,15 @@ final class AppModel: ObservableObject {
                     log: { line in self.append(line) }
                 )
                 if install {
-                    try Installer.install(ipaPath: signed, udid: udid, log: { line in self.append(line) })
+                    try Installer.install(ipaPath: signed, device: device, log: { line in self.append(line) })
                     if shouldLaunch {
-                        Installer.launch(bundleID: ipa.bundleID, log: { line in self.append(line) })
+                        Installer.launch(bundleID: ipa.bundleID, device: device, log: { line in self.append(line) })
                     }
                 }
                 self.append("===== 全部完成 =====")
                 await MainActor.run {
                     self.busy = false
-                    self.status = install ? "已签名并安装到 \(udid.prefix(8))…" : "已导出 \(signed)"
+                    self.status = install ? "已签名并安装到 \(device.udid.prefix(8))…" : "已导出 \(signed)"
                 }
             } catch {
                 self.append("❌ \(error.localizedDescription)")

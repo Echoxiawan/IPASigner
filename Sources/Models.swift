@@ -60,20 +60,56 @@ struct ProvisioningProfile: Identifiable {
 
 // MARK: - 设备
 
+enum DeviceConnection: String, Hashable {
+    case usb
+    case localNetwork
+    case unknown
+
+    var label: String {
+        switch self {
+        case .usb: return "USB"
+        case .localNetwork: return "局域网"
+        case .unknown: return "连接方式未知"
+        }
+    }
+}
+
 struct DeviceInfo: Identifiable, Hashable {
     let udid: String
     let name: String
     let productType: String
+    let modelName: String
     let osVersion: String
+    let connection: DeviceConnection
+    let coreDeviceIdentifier: String?
 
     var id: String { udid }
 
     var display: String {
-        "\(name)  |  \(productType)  |  iOS \(osVersion)"
+        let model = modelName.isEmpty || modelName == productType
+            ? productType
+            : "\(modelName) (\(productType))"
+        return "\(name)  |  \(model)  |  iOS \(osVersion)  |  \(detailLabel)"
+    }
+
+    var detailLabel: String {
+        coreDeviceIdentifier == nil
+            ? connection.label
+            : "\(connection.label) · Xcode CoreDevice"
     }
 
     var shortUDID: String {
         udid.count > 12 ? String(udid.prefix(8)) + "…" + String(udid.suffix(4)) : udid
+    }
+
+    static func usbFallback(udid: String) -> DeviceInfo {
+        DeviceInfo(udid: udid,
+                   name: "iPhone",
+                   productType: "-",
+                   modelName: "",
+                   osVersion: "-",
+                   connection: .usb,
+                   coreDeviceIdentifier: nil)
     }
 }
 

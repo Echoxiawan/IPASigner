@@ -55,14 +55,13 @@ enum CLIMode {
             print("  \(p.isExpired ? "已过期" : "有效")  \(p.appID)  \(Util.dateString(p.expiration))  设备 \(p.devices.count)  \(p.name)")
         }
 
-        do {
-            let devices = try Discovery.devices()
-            print("\n== 连接设备 (\(devices.count)) ==")
-            for d in devices {
-                print("  \(d.udid)  \(d.display)")
-            }
-        } catch {
-            print("\n== 连接设备 ==\n  \(error.localizedDescription)")
+        let discovered = Discovery.discoverDevices()
+        print("\n== 连接设备 (\(discovered.devices.count)) ==")
+        for d in discovered.devices {
+            print("  \(d.udid)  \(d.display)")
+        }
+        for warning in discovered.warnings {
+            print("  ! \(warning)")
         }
     }
 
@@ -91,12 +90,18 @@ enum CLIMode {
                 throw ToolError.failed("必须带 --device <UDID>（--list 里能看到）")
             }
 
+            let discovered = Discovery.discoverDevices()
+            let target = discovered.devices.first {
+                $0.udid.caseInsensitiveCompare(deviceUDID) == .orderedSame
+                    || $0.coreDeviceIdentifier == deviceUDID
+            } ?? DeviceInfo.usbFallback(udid: deviceUDID)
+
             let candidates = Discovery.candidates(identities: identities,
                                                   profiles: profiles,
                                                   bundleID: ipa.bundleID,
-                                                  deviceUDID: deviceUDID)
+                                                  deviceUDID: target.udid)
             guard let chosen = candidates.first else {
-                throw ToolError.failed("没有匹配的证书 + 描述文件组合（检查是否已过期 / 是否包含设备 \(deviceUDID)）")
+                throw ToolError.failed("没有匹配的证书 + 描述文件组合（检查是否已过期 / 是否包含设备 \(target.udid)）")
             }
             print("选中文档: \(chosen.identity.name) + \(chosen.profile.name)")
 
@@ -105,9 +110,9 @@ enum CLIMode {
             let signed = try Signer.sign(request) { print($0) }
 
             if args.contains("--install") {
-                try Installer.install(ipaPath: signed, udid: deviceUDID) { print($0) }
+                try Installer.install(ipaPath: signed, device: target) { print($0) }
                 if args.contains("--launch") {
-                    Installer.launch(bundleID: ipa.bundleID) { print($0) }
+                    Installer.launch(bundleID: ipa.bundleID, device: target) { print($0) }
                 }
             }
             print("完成: \(signed)")

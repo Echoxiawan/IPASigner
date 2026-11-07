@@ -22,9 +22,9 @@ English · <a href="README.md">简体中文</a>
 
 ---
 
-IPASigner turns the manual chain — unpack → sign nested binaries inside-out → embed the provisioning profile → re-sign the main binary → verify → repack → install with `ideviceinstaller` — into a single window.
+IPASigner turns the manual chain — unpack → sign nested binaries inside-out → embed the provisioning profile → re-sign the main binary → verify → repack → install with Xcode CoreDevice or `ideviceinstaller` — into a single window.
 
-It reuses the development identities already in your Keychain: **no Apple ID login inside the app, no network access**, fully offline signing. It does not request certificates, register AppIDs, or enroll devices — leave that to Xcode automatic signing or [developer.apple.com](https://developer.apple.com). This tool only handles the last mile: *once your certificate and profile are ready, how do you get the package onto the phone fastest.*
+It reuses the development identities already in your Keychain: **no Apple ID login inside the app and no external network access**, with all signing performed locally. Device communication may use a local-network tunnel through Xcode CoreDevice. It does not request certificates, register AppIDs, or enroll devices — leave that to Xcode automatic signing or [developer.apple.com](https://developer.apple.com). This tool only handles the last mile: *once your certificate and profile are ready, how do you get the package onto the phone fastest.*
 
 > The app UI is currently in Simplified Chinese. This document uses the Chinese button labels with English explanations.
 
@@ -59,11 +59,11 @@ It reuses the development identities already in your Keychain: **no Apple ID log
 | Capability | Details |
 |---|---|
 | Read IPA | Reads `Payload/*.app/Info.plist` without a full unpack: bundle id, name, version, minimum iOS, executable name |
-| Device discovery | Live USB detection via `idevice_id` / `ideviceinfo`, with name, model, iOS version and full UDID |
+| Device discovery | Finds USB and local-network devices through Xcode `devicectl` and `idevice_id` / `ideviceinfo`, with name, model, iOS version, transport and full UDID |
 | Account pairing | Keychain certificates × local profiles matched automatically; only combos that can sign *this app for this device* are listed |
 | Re-signing | Nested binaries signed deepest-first; frameworks / appex bundles folded into single signing targets; entitlements rebuilt from the profile |
 | Verification | Fails on `codesign --verify --deep --strict`; never emits a broken IPA |
-| Installation | `ideviceinstaller` with live progress; optional auto-launch after install |
+| Installation | Xcode CoreDevice first, with automatic `ideviceinstaller` fallback for older devices; live progress and optional auto-launch |
 | Export | "Sign only, export…" writes the signed IPA anywhere you choose |
 | Traceable | Step-by-step `①`–`⑩` logs show exactly where a run stopped |
 | Two front ends | The same engine powers both the SwiftUI window and a CLI mode |
@@ -79,16 +79,16 @@ It reuses the development identities already in your Keychain: **no Apple ID log
 | Dependency | Purpose | Minimum |
 |---|---|---|
 | macOS | Runtime | 13.0 (Ventura), Apple Silicon or Intel |
-| Xcode or Command Line Tools | Provides `swiftc`, `codesign`, `security`, `zip`, `unzip` | Xcode 14 (Swift 5.7) |
-| libimobiledevice | Device communication: `idevice_id` / `ideviceinfo` / `ideviceinstaller` | Any recent version |
+| Xcode | Provides `swiftc`, `codesign`, `security`, `zip`, `unzip`, and CoreDevice discovery/install for iOS 17+ | Xcode 15 |
+| libimobiledevice | USB fallback for older devices or setups without CoreDevice: `idevice_id` / `ideviceinfo` / `ideviceinstaller` | Optional |
 
 ```bash
-brew install libimobiledevice      # the device communication trio
+brew install libimobiledevice      # optional USB fallback for older devices
 ```
 
 The `openssl` binary bundled with macOS is used to read the team ID (the `OU` field) from certificates — nothing extra to install.
 
-Optional: auto-launch after install relies on `pymobiledevice3` (silently skipped when absent; installation still succeeds):
+Optional: CoreDevice devices launch through `devicectl`; older devices without a CoreDevice identifier fall back to `pymobiledevice3` (silently skipped when absent; installation still succeeds):
 
 ```bash
 pip3 install pymobiledevice3
@@ -151,7 +151,7 @@ Only the host architecture is built by default; `UNIVERSAL=1` produces both `arm
 ### Three steps to a signed app
 
 1. **① Choose the IPA** — click "浏览…" (Browse…) and pick an `.ipa`; the panel below shows its name, version, bundle id and minimum iOS;
-2. **② Choose the device** — the dropdown lists connected and trusted devices; the full UDID appears underneath;
+2. **② Choose the device** — the dropdown lists devices connected through Xcode CoreDevice or USB and already trusted; the full UDID and transport appear underneath;
 3. **③ Choose a signing account** — a pre-matched "certificate → profile" pair, wildcard profiles first, with team, AppID and expiry in the details.
 
 Then click **签名并安装** (Sign and Install) to push it straight to the phone, or **只签名导出…** (Sign only, export…) to just produce the IPA file.
@@ -171,9 +171,9 @@ The status bar at the bottom of the window turns into a line like this, meaning 
 Top to bottom the window is three selections plus one action button:
 
 - **Package info** — name, version, bundle id and minimum iOS of the selected IPA;
-- **Device dropdown** — connected and trusted devices; the full UDID is shown below it;
+- **Device dropdown** — devices connected through Xcode CoreDevice or USB and already trusted; the full UDID and transport are shown below it;
 - **Account dropdown** — only the "certificate + profile" combinations that actually work;
-- **"装完自动启动" (auto-launch after install) checkbox** — tries to start the app once installation finishes (requires `pymobiledevice3` and an unlocked device; failure does not affect the install).
+- **"装完自动启动" (auto-launch after install) checkbox** — tries to start the app once installation finishes (uses `devicectl` on CoreDevice and `pymobiledevice3` on older devices; failure does not affect the install).
 
 ### Logs
 
@@ -261,7 +261,7 @@ flowchart TD
     F --> G["codesign --verify --deep --strict"]
     G -->|fails| H["Report the error, emit nothing"]
     G -->|passes| I["Repack with zip into a new IPA"]
-    I --> J["Install with ideviceinstaller"]
+    I --> J["Install with CoreDevice / ideviceinstaller"]
 ```
 
 Concretely, it does the following:
@@ -281,7 +281,7 @@ Concretely, it does the following:
 5. **Embed the profile first**: copy the `.mobileprovision` to `Payload/Xxx.app/embedded.mobileprovision` and only **then** sign the main binary. In the reverse order the profile never lands in `CodeResources`, and `--deep --strict` reports `a sealed resource is missing or invalid`.
 6. **Re-sign the main binary**: sign it once more with entitlements, then run `codesign --verify --deep --strict` and abort immediately if it fails.
 7. **Pack with zip, not ditto**: ditto drags in `._*` resource-fork files, and the device reports `Failed to create CFBundle from Payload/._Xxx.app`.
-8. **Install**: `ideviceinstaller -u <UDID> -i <ipa>`, with progress streamed back live.
+8. **Install**: when a CoreDevice identifier is available, unpack to `Payload/*.app` and hand it to `devicectl`; otherwise use `ideviceinstaller -u <UDID> -i <ipa>`, with progress streamed back live.
 
 The temp directory is removed when the run ends; the finished IPA is written only to the path you specify.
 
@@ -316,7 +316,7 @@ IPASigner/
 │   ├── Models.swift       Certificates / profiles / devices / IPA / account candidates
 │   ├── Discovery.swift    Discovery and matching of certs, profiles, devices, IPAs
 │   ├── Signer.swift       Unpack → sign → embed profile → re-sign → verify → repack
-│   ├── Installer.swift    Installation via ideviceinstaller and optional launch
+│   ├── Installer.swift    Installation via CoreDevice / ideviceinstaller and optional launch
 │   ├── Snapshot.swift     Window self-snapshot
 │   ├── CLIMode.swift      Command line entry point
 │   └── Support.swift      Process execution / hashing / Mach-O detection / misc
@@ -341,7 +341,8 @@ IPASigner/
 | `a sealed resource is missing or invalid: file added: embedded.mobileprovision` | The profile was embedded at the wrong moment | The profile must be embedded before the main binary is signed (this tool guarantees it) |
 | `Failed to create CFBundle from .../._xxx.app` | Packaging pulled in resource-fork files | Pack with `zip` (this tool guarantees it); never use `ditto` when packaging by hand |
 | Installs but crashes on launch | Developer Mode is off, or the profile expired | Enable Developer Mode and restart; free accounts expire after 7 days, so re-sign |
-| No device in the list | Not unlocked / not trusted / libimobiledevice not installed | Unlock and tap Trust, then `brew install libimobiledevice` |
+| Xcode sees the device but this app does not | Xcode reaches the device through CoreDevice over local network, while older builds only scan the `idevice_id` USB list | Use the current build, or reconnect the data cable and confirm Xcode reports a USB transport |
+| No device in the list | Not unlocked / not trusted / not paired with Xcode / libimobiledevice not installed | Unlock and tap Trust; connect once in Xcode; older devices can use `brew install libimobiledevice` |
 | "Cannot verify developer" on first launch | Release builds are not notarized | Right-click → Open, or run the `xattr` command above |
 | CLI says "must pass --device" | Profile matching depends on the device UDID | Look up the UDID with `--list` and pass it |
 | "No `Payload/*.app/Info.plist` found" | Not a standard IPA layout | Make sure it is a complete IPA, not a descriptor or a patch |
@@ -351,7 +352,7 @@ IPASigner/
 
 This feature is an optional enhancement — failure never affects the installation result. The log tells you exactly why:
 
-- `（跳过启动：未安装 pymobiledevice3）` — install it with `pip3 install pymobiledevice3`;
+- `（跳过启动：未安装 pymobiledevice3）` — only the legacy fallback needs it; install with `pip3 install pymobiledevice3`;
 - `（跳过启动：没有 python3）` — install Python 3;
 - `（没拉起来：设备要解锁，开发者磁盘镜像要挂上）` — unlock the iPhone and retry, or just tap the icon to open the app yourself.
 
@@ -363,7 +364,7 @@ This feature is an optional enhancement — failure never affects the installati
 
 ## 🔒 Security and Scope
 
-- **Fully local**: the app never signs in to an Apple ID, makes no network requests and writes no database; certificates and private keys stay in the system Keychain.
+- **Fully local**: the app never signs in to an Apple ID, makes no external network requests and writes no database; CoreDevice communication may use the local network, while certificates and private keys stay in the system Keychain.
 - **Minimal writes**: unpacking and signing happen in a system temp directory that is cleaned up afterwards; the finished IPA is written only to the path you specify.
 - **Equivalent to a normal install**: it uses your own developer certificate, so the resulting app behaves like one built and installed by Xcode.
 - **Scope**: this tool only covers "how to sign and install fast once the certificate and profile are ready". Requesting certificates, registering AppIDs and enrolling devices belong in Xcode automatic signing or [developer.apple.com](https://developer.apple.com).
@@ -392,4 +393,4 @@ If your change touches the signing logic, please explain in the PR description *
 
 This project is open source under the [MIT](./LICENSE) license.
 
-Signing and installation invoke system and third-party tools such as `codesign`, `security` and `ideviceinstaller`; this repository ships only the calling logic and distributes no Apple certificates or provisioning profiles.
+Signing and installation invoke system and third-party tools such as `codesign`, `security`, `devicectl` and `ideviceinstaller`; this repository ships only the calling logic and distributes no Apple certificates or provisioning profiles.

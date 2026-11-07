@@ -88,7 +88,7 @@ struct ContentView: View {
     // MARK: - 设备
 
     private var row1: some View {
-        card("② 选择设备（USB 插着的）") {
+        card("② 选择设备（USB / 局域网）") {
             HStack(spacing: 10) {
                 Picker("", selection: $m.selectedDeviceUDID) {
                     if m.devices.isEmpty {
@@ -106,7 +106,7 @@ struct ContentView: View {
                     .disabled(m.busy)
             }
             if let d = m.selectedDevice {
-                Text("UDID \(d.udid)")
+                Text("UDID \(d.udid)  ·  \(d.detailLabel)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             }

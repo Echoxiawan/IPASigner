@@ -4,6 +4,11 @@ import Foundation
 
 enum Discovery {
 
+    struct DeviceDiscoveryOutcome {
+        let devices: [DeviceInfo]
+        let warnings: [String]
+    }
+
     // ---------- 证书 ----------
 
     static func identities() -> [SigningIdentity] {
@@ -149,24 +154,177 @@ enum Discovery {
 
     // ---------- 设备 ----------
 
-    static func devices() throws -> [DeviceInfo] {
-        guard let ideviceID = ToolPath.find("idevice_id") else { throw ToolError.missing("idevice_id") }
-        let ideviceInfo = try ToolPath.require("ideviceinfo")
+    /// 同时扫描 Xcode CoreDevice 与 libimobiledevice。
+    /// iOS 17 之后 Xcode 常通过 CoreDevice 的 USB / 局域网隧道访问设备，
+    /// 此时 `idevice_id -l` 可能完全看不到设备，因此不能只依赖它。
+    static func discoverDevices() -> DeviceDiscoveryOutcome {
+        let core = coreDeviceDevices()
+        let usb = libimobiledeviceDevices()
+        let devices = merge(devices: core.devices, with: usb.devices)
+
+        var warnings: [String] = []
+        if devices.isEmpty {
+            if let error = core.error { warnings.append("Xcode CoreDevice: \(error)") }
+            if let error = usb.error { warnings.append("libimobiledevice: \(error)") }
+        }
+        return DeviceDiscoveryOutcome(devices: devices, warnings: warnings)
+    }
+
+    private struct CoreDeviceListEnvelope: Decodable {
+        let result: CoreDeviceListResult
+    }
+
+    private struct CoreDeviceListResult: Decodable {
+        let devices: [CoreDeviceRecord]
+    }
+
+    private struct CoreDeviceRecord: Decodable {
+        let identifier: String
+        let connectionProperties: CoreDeviceConnectionProperties?
+        let deviceProperties: CoreDeviceProperties?
+        let hardwareProperties: CoreDeviceHardwareProperties
+    }
+
+    private struct CoreDeviceConnectionProperties: Decodable {
+        let pairingState: String?
+        let transportType: String?
+        let tunnelState: String?
+    }
+
+    private struct CoreDeviceProperties: Decodable {
+        let name: String?
+        let osVersionNumber: String?
+        let developerModeStatus: String?
+    }
+
+    private struct CoreDeviceHardwareProperties: Decodable {
+        let deviceType: String?
+        let marketingName: String?
+        let platform: String?
+        let productType: String?
+        let reality: String?
+        let udid: String?
+    }
+
+    private static func coreDeviceDevices() -> (devices: [DeviceInfo], error: String?) {
+        guard let xcrun = ToolPath.find("xcrun") else {
+            return ([], "找不到 xcrun，请安装完整 Xcode")
+        }
+
+        let outputPath = NSTemporaryDirectory() + "ipasigner-coredevice-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: outputPath) }
+
+        let r = Shell.run(xcrun, ["devicectl", "list", "devices",
+                                  "--quiet", "--timeout", "20",
+                                  "--json-output", outputPath])
+        guard r.ok else {
+            return ([], r.combined.isEmpty ? "devicectl 扫描失败" : r.combined)
+        }
+        guard let data = FileManager.default.contents(atPath: outputPath) else {
+            return ([], "devicectl 没有生成设备列表")
+        }
+        guard let envelope = try? JSONDecoder().decode(CoreDeviceListEnvelope.self, from: data) else {
+            return ([], "无法解析 devicectl 设备列表")
+        }
+
+        var result: [DeviceInfo] = []
+        for record in envelope.result.devices {
+            let hardware = record.hardwareProperties
+            guard hardware.platform == "iOS",
+                  hardware.reality == "physical",
+                  let udid = hardware.udid?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !udid.isEmpty else { continue }
+
+            let connectionInfo = record.connectionProperties
+            guard connectionInfo?.pairingState == "paired" else { continue }
+            guard connectionInfo?.transportType != nil || connectionInfo?.tunnelState == "connected" else {
+                continue
+            }
+
+            let transport = connectionInfo?.transportType?.lowercased() ?? ""
+            let connection: DeviceConnection
+            switch transport {
+            case "usb": connection = .usb
+            case "localnetwork", "network": connection = .localNetwork
+            default: connection = .unknown
+            }
+
+            let productType = hardware.productType ?? "-"
+            let marketingName = hardware.marketingName ?? ""
+            result.append(DeviceInfo(udid: udid,
+                                     name: record.deviceProperties?.name ?? marketingName,
+                                     productType: productType,
+                                     modelName: marketingName,
+                                     osVersion: record.deviceProperties?.osVersionNumber ?? "-",
+                                     connection: connection,
+                                     coreDeviceIdentifier: record.identifier))
+        }
+        return (result, nil)
+    }
+
+    private static func libimobiledeviceDevices() -> (devices: [DeviceInfo], error: String?) {
+        guard let ideviceID = ToolPath.find("idevice_id") else {
+            return ([], "未安装 idevice_id")
+        }
+
         let r = Shell.run(ideviceID, ["-l"])
+        guard r.ok else {
+            return ([], r.combined.isEmpty ? "idevice_id 扫描失败" : r.combined)
+        }
+
+        let ideviceInfo = ToolPath.find("ideviceinfo")
         let udids = r.out.split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+
         var result: [DeviceInfo] = []
         for udid in udids {
-            let name = Shell.run(ideviceInfo, ["-u", udid, "-k", "DeviceName"]).combined
-            let product = Shell.run(ideviceInfo, ["-u", udid, "-k", "ProductType"]).combined
-            let os = Shell.run(ideviceInfo, ["-u", udid, "-k", "ProductVersion"]).combined
+            let name = ideviceInfo.map {
+                Shell.run($0, ["-u", udid, "-k", "DeviceName"]).out
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } ?? ""
+            let product = ideviceInfo.map {
+                Shell.run($0, ["-u", udid, "-k", "ProductType"]).out
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } ?? ""
+            let os = ideviceInfo.map {
+                Shell.run($0, ["-u", udid, "-k", "ProductVersion"]).out
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } ?? ""
             result.append(DeviceInfo(udid: udid,
                                      name: name.isEmpty ? "iPhone" : name,
                                      productType: product.isEmpty ? "-" : product,
-                                     osVersion: os.isEmpty ? "-" : os))
+                                     modelName: "",
+                                     osVersion: os.isEmpty ? "-" : os,
+                                     connection: .usb,
+                                     coreDeviceIdentifier: nil))
         }
-        return result
+        return (result, ideviceInfo == nil ? "未安装 ideviceinfo，设备详情可能不完整" : nil)
+    }
+
+    private static func merge(devices coreDevices: [DeviceInfo],
+                              with usbDevices: [DeviceInfo]) -> [DeviceInfo] {
+        var byUDID: [String: DeviceInfo] = [:]
+        for device in coreDevices {
+            byUDID[device.udid.uppercased()] = device
+        }
+        for device in usbDevices {
+            let key = device.udid.uppercased()
+            guard let existing = byUDID[key] else {
+                byUDID[key] = device
+                continue
+            }
+            byUDID[key] = DeviceInfo(udid: existing.udid,
+                                     name: existing.name.isEmpty ? device.name : existing.name,
+                                     productType: existing.productType == "-" ? device.productType : existing.productType,
+                                     modelName: existing.modelName,
+                                     osVersion: existing.osVersion == "-" ? device.osVersion : existing.osVersion,
+                                     connection: existing.connection == .usb || device.connection == .usb ? .usb : existing.connection,
+                                     coreDeviceIdentifier: existing.coreDeviceIdentifier ?? device.coreDeviceIdentifier)
+        }
+        return byUDID.values.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     }
 
     // ---------- IPA ----------
@@ -221,7 +379,9 @@ enum Discovery {
                 if !profile.certSHA1s.contains(identity.sha1.uppercased()) { continue }
                 if let bundleID, !bundleID.isEmpty, !profile.appIDMatches(bundleID: bundleID) { continue }
                 if let deviceUDID, !deviceUDID.isEmpty, !profile.devices.isEmpty,
-                   !profile.devices.contains(deviceUDID) { continue }
+                   !profile.devices.contains(where: {
+                       $0.caseInsensitiveCompare(deviceUDID) == .orderedSame
+                   }) { continue }
                 result.append(SignCandidate(identity: identity, profile: profile))
             }
         }

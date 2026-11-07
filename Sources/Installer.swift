@@ -2,10 +2,66 @@ import Foundation
 
 enum Installer {
 
-    /// 通过 ideviceinstaller 安装到指定 UDID 的设备，进度实时回调
-    static func install(ipaPath: String, udid: String, log: @escaping (String) -> Void) throws {
+    /// 优先走 Xcode CoreDevice；旧设备或没有 CoreDevice 标识时回退到 ideviceinstaller。
+    static func install(ipaPath: String, device: DeviceInfo, log: @escaping (String) -> Void) throws {
+        if let coreDeviceIdentifier = device.coreDeviceIdentifier {
+            try installWithCoreDevice(ipaPath: ipaPath,
+                                      identifier: coreDeviceIdentifier,
+                                      device: device,
+                                      log: log)
+        } else {
+            try installWithLibimobiledevice(ipaPath: ipaPath,
+                                            udid: device.udid,
+                                            device: device,
+                                            log: log)
+        }
+    }
+
+    private static func installWithCoreDevice(ipaPath: String,
+                                              identifier: String,
+                                              device: DeviceInfo,
+                                              log: @escaping (String) -> Void) throws {
+        let xcrun = try ToolPath.require("xcrun")
+        let fm = FileManager.default
+        let work = try Util.tempDir("coredevice-install")
+        defer { try? fm.removeItem(atPath: work) }
+
+        log("⑧ 开始安装 → \(device.display)")
+        log("   安装通道: Xcode CoreDevice")
+
+        let unzip = "/usr/bin/unzip"
+        let unpack = Shell.run(unzip, ["-q", "-o", ipaPath, "-d", work])
+        guard unpack.ok else {
+            throw ToolError.failed("CoreDevice 安装前解包失败: \(unpack.combined)")
+        }
+
+        let payloadPath = work + "/Payload"
+        guard let entries = try? fm.contentsOfDirectory(atPath: payloadPath),
+              let appName = entries.first(where: { $0.hasSuffix(".app") }) else {
+            throw ToolError.failed("CoreDevice 安装前没找到 Payload/*.app")
+        }
+        let appPath = payloadPath + "/" + appName
+        log("   应用包: \(appName)")
+
+        let code = try Shell.stream(xcrun, ["devicectl", "device", "install", "app",
+                                            "--device", identifier,
+                                            "--timeout", "180",
+                                            appPath]) { chunk in
+            logChunk(chunk, log: log)
+        }
+        guard code == 0 else {
+            throw ToolError.failed("安装失败，devicectl 退出码 \(code)")
+        }
+        log("⑨ 安装完成")
+    }
+
+    private static func installWithLibimobiledevice(ipaPath: String,
+                                                    udid: String,
+                                                    device: DeviceInfo,
+                                                    log: @escaping (String) -> Void) throws {
         let tool = try ToolPath.require("ideviceinstaller")
-        log("⑧ 开始安装 → 设备 \(udid)")
+        log("⑧ 开始安装 → \(device.display)")
+        log("   安装通道: libimobiledevice")
         var buffer = ""
         let code = try Shell.stream(tool, ["-u", udid, "-i", ipaPath]) { chunk in
             buffer += chunk.replacingOccurrences(of: "\r", with: "\n")
@@ -22,8 +78,39 @@ enum Installer {
         log("⑨ 安装完成")
     }
 
-    /// 装完顺手拉起来（依赖 pymobiledevice3，没有就跳过，不影响安装结果）
-    static func launch(bundleID: String, log: @escaping (String) -> Void) {
+    /// 装完顺手拉起来；CoreDevice 直接启动，旧设备继续使用 pymobiledevice3。
+    static func launch(bundleID: String, device: DeviceInfo, log: @escaping (String) -> Void) {
+        if let identifier = device.coreDeviceIdentifier {
+            launchWithCoreDevice(bundleID: bundleID, identifier: identifier, log: log)
+        } else {
+            launchWithLibimobiledevice(bundleID: bundleID, log: log)
+        }
+    }
+
+    private static func launchWithCoreDevice(bundleID: String,
+                                             identifier: String,
+                                             log: @escaping (String) -> Void) {
+        guard let xcrun = ToolPath.find("xcrun") else {
+            log("（跳过启动：找不到 xcrun）")
+            return
+        }
+        log("⑩ 启动 \(bundleID) …")
+        do {
+            let code = try Shell.stream(xcrun, ["devicectl", "device", "process", "launch",
+                                                "--device", identifier,
+                                                bundleID]) { chunk in
+                logChunk(chunk, log: log)
+            }
+            if code != 0 {
+                log("   （没拉起来：确认设备已解锁；安装本身已完成，也可手动点图标打开）")
+            }
+        } catch {
+            log("   （启动失败：\(error.localizedDescription)）")
+        }
+    }
+
+    private static func launchWithLibimobiledevice(bundleID: String,
+                                                   log: @escaping (String) -> Void) {
         guard let python = ToolPath.find("python3") else {
             log("（跳过启动：没有 python3）")
             return
@@ -59,5 +146,14 @@ enum Installer {
         } catch {
             log("   （启动失败：\(error.localizedDescription)）")
         }
+    }
+
+    private static func logChunk(_ chunk: String, log: @escaping (String) -> Void) {
+        let text = chunk.replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        if !text.isEmpty { log("   " + text) }
     }
 }
